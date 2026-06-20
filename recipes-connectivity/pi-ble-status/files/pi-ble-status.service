@@ -1,0 +1,13 @@
+[Unit]
+Description=Pi Status BLE GATT Server
+After=bluetooth.target network.target
+Requires=bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/pi-ble-status
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

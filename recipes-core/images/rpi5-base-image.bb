@@ -43,8 +43,10 @@ patch_nvme_image() {
 }
 
 IMAGE_INSTALL:append = " \
-    networkmanager \
-    nm-eth0-config \
+    bluez5 \
+    pi-ble-status \
+    eth0-networkd-config \
+    ssh-keys \
     e2fsprogs \
     e2fsprogs-mke2fs \
     e2fsprogs-e2fsck \
