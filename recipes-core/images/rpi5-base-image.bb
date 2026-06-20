@@ -46,6 +46,7 @@ IMAGE_INSTALL:append = " \
     bluez5 \
     pi-ble-status \
     eth0-networkd-config \
+    wlan0-config \
     ssh-keys \
     e2fsprogs \
     e2fsprogs-mke2fs \

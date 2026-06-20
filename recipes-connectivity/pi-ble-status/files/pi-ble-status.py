@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
-"""BLE GATT server exposing Pi status as readable characteristics."""
+"""BLE GATT server exposing Pi status as readable characteristics.
 
+Read characteristics:
+  1001 — wlan0 IP
+  1002 — eth0 IP
+  1003 — CPU temperature
+  1004 — uptime
+  1005 — hostname
+
+Write characteristic:
+  1006 — WiFi provisioning  (write "SSID\nPASSWORD", read back status)
+"""
+
+import os
 import sys
 import socket
 import subprocess
@@ -9,21 +21,24 @@ import dbus.service
 import dbus.mainloop.glib
 from gi.repository import GLib
 
-BLUEZ_SVC       = 'org.bluez'
-GATT_MGR_IFACE  = 'org.bluez.GattManager1'
-GATT_SVC_IFACE  = 'org.bluez.GattService1'
-GATT_CHR_IFACE  = 'org.bluez.GattCharacteristic1'
-LE_ADV_MGR      = 'org.bluez.LEAdvertisingManager1'
-LE_ADV_IFACE    = 'org.bluez.LEAdvertisement1'
-OM_IFACE        = 'org.freedesktop.DBus.ObjectManager'
-PROP_IFACE      = 'org.freedesktop.DBus.Properties'
+BLUEZ_SVC      = 'org.bluez'
+GATT_MGR_IFACE = 'org.bluez.GattManager1'
+GATT_SVC_IFACE = 'org.bluez.GattService1'
+GATT_CHR_IFACE = 'org.bluez.GattCharacteristic1'
+LE_ADV_MGR     = 'org.bluez.LEAdvertisingManager1'
+LE_ADV_IFACE   = 'org.bluez.LEAdvertisement1'
+OM_IFACE       = 'org.freedesktop.DBus.ObjectManager'
+PROP_IFACE     = 'org.freedesktop.DBus.Properties'
 
-SVC_UUID      = '00001000-0000-0000-0000-000000000000'
-WIFI_IP_UUID  = '00001001-0000-0000-0000-000000000000'
-ETH_IP_UUID   = '00001002-0000-0000-0000-000000000000'
-TEMP_UUID     = '00001003-0000-0000-0000-000000000000'
-UPTIME_UUID   = '00001004-0000-0000-0000-000000000000'
-HOST_UUID     = '00001005-0000-0000-0000-000000000000'
+SVC_UUID       = '00001000-0000-0000-0000-000000000000'
+WIFI_IP_UUID   = '00001001-0000-0000-0000-000000000000'
+ETH_IP_UUID    = '00001002-0000-0000-0000-000000000000'
+TEMP_UUID      = '00001003-0000-0000-0000-000000000000'
+UPTIME_UUID    = '00001004-0000-0000-0000-000000000000'
+HOST_UUID      = '00001005-0000-0000-0000-000000000000'
+WIFI_PROV_UUID = '00001006-0000-0000-0000-000000000000'
+
+WPA_CONF = '/etc/wpa_supplicant/wpa_supplicant-wlan0.conf'
 
 
 # --- Status helpers ----------------------------------------------------------
@@ -127,6 +142,66 @@ class Characteristic(dbus.service.Object):
         return to_bytes(self.value_fn())
 
 
+class WifiProvCharacteristic(dbus.service.Object):
+    """Write SSID\nPASSWORD to provision WiFi. Read back status."""
+
+    def __init__(self, bus, index, svc):
+        self.path = dbus.ObjectPath(f'{svc.path}/char{index}')
+        self.uuid = WIFI_PROV_UUID
+        self.svc = svc
+        self._status = self._initial_status()
+        dbus.service.Object.__init__(self, bus, self.path)
+
+    def _initial_status(self):
+        return 'configured' if os.path.exists(WPA_CONF) else 'not-configured'
+
+    def props(self):
+        return {GATT_CHR_IFACE: {
+            'UUID': self.uuid,
+            'Service': self.svc.path,
+            'Flags': dbus.Array(['read', 'write', 'write-without-response'], signature='s'),
+        }}
+
+    @dbus.service.method(PROP_IFACE, in_signature='s', out_signature='a{sv}')
+    def GetAll(self, iface):
+        return self.props()[GATT_CHR_IFACE]
+
+    @dbus.service.method(GATT_CHR_IFACE, in_signature='a{sv}', out_signature='ay')
+    def ReadValue(self, options):
+        return to_bytes(self._status)
+
+    @dbus.service.method(GATT_CHR_IFACE, in_signature='aya{sv}')
+    def WriteValue(self, value, options):
+        try:
+            text = bytes(value).decode('utf-8').strip()
+            if '\n' not in text:
+                self._status = 'error:format'
+                print('WiFi prov: bad format (expected SSID\\nPASSWORD)', file=sys.stderr)
+                return
+            ssid, password = text.split('\n', 1)
+            ssid = ssid.strip()
+            password = password.strip()
+            conf = (
+                'ctrl_interface=/run/wpa_supplicant\n'
+                'update_config=1\n\n'
+                'network={\n'
+                f'    ssid="{ssid}"\n'
+                f'    psk="{password}"\n'
+                '}\n'
+            )
+            os.makedirs('/etc/wpa_supplicant', exist_ok=True)
+            with open(WPA_CONF, 'w') as f:
+                f.write(conf)
+            os.chmod(WPA_CONF, 0o600)
+            subprocess.run(['systemctl', 'enable', 'wpa_supplicant@wlan0'], check=True)
+            subprocess.run(['systemctl', 'restart', 'wpa_supplicant@wlan0'], check=True)
+            self._status = f'connecting:{ssid}'
+            print(f'WiFi prov: connecting to {ssid}', flush=True)
+        except Exception as e:
+            self._status = f'error:{e}'
+            print(f'WiFi prov error: {e}', file=sys.stderr)
+
+
 class Advertisement(dbus.service.Object):
     def __init__(self, bus):
         dbus.service.Object.__init__(self, bus, '/org/bluez/pistatusadv')
@@ -164,13 +239,12 @@ def main():
         print('No Bluetooth adapter found', file=sys.stderr)
         sys.exit(1)
 
-    # Power on adapter
     props = dbus.Interface(bus.get_object(BLUEZ_SVC, adapter), PROP_IFACE)
     props.Set('org.bluez.Adapter1', 'Powered', dbus.Boolean(True))
 
-    # Build GATT application
     app = Application(bus)
     svc = Service(bus, 0, SVC_UUID)
+
     for i, (uuid, fn) in enumerate([
         (WIFI_IP_UUID, lambda: get_ip('wlan0')),
         (ETH_IP_UUID,  lambda: get_ip('eth0')),
@@ -179,16 +253,16 @@ def main():
         (HOST_UUID,    socket.gethostname),
     ]):
         svc.add_char(Characteristic(bus, i, uuid, svc, fn))
+
+    svc.add_char(WifiProvCharacteristic(bus, 5, svc))
     app.add_service(svc)
 
-    # Register GATT application
     gatt = dbus.Interface(bus.get_object(BLUEZ_SVC, adapter), GATT_MGR_IFACE)
     gatt.RegisterApplication(
         dbus.ObjectPath('/org/bluez/pistatus'), {},
         reply_handler=lambda: print('GATT registered'),
         error_handler=lambda e: (print(f'GATT error: {e}', file=sys.stderr), sys.exit(1)))
 
-    # Register advertisement
     adv = Advertisement(bus)
     adv_mgr = dbus.Interface(bus.get_object(BLUEZ_SVC, adapter), LE_ADV_MGR)
     adv_mgr.RegisterAdvertisement(
