@@ -174,11 +174,12 @@ class WifiProvCharacteristic(dbus.service.Object):
     def WriteValue(self, value, options):
         try:
             text = bytes(value).decode('utf-8').strip()
-            if '\n' not in text:
+            sep = next((s for s in ['\n', '/', ':'] if s in text), None)
+            if sep is None:
                 self._status = 'error:format'
-                print('WiFi prov: bad format (expected SSID\\nPASSWORD)', file=sys.stderr)
+                print('WiFi prov: bad format (expected SSID/PASSWORD)', file=sys.stderr)
                 return
-            ssid, password = text.split('\n', 1)
+            ssid, password = text.split(sep, 1)
             ssid = ssid.strip()
             password = password.strip()
             conf = (
