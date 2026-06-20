@@ -184,7 +184,8 @@ class WifiProvCharacteristic(dbus.service.Object):
             password = password.strip()
             conf = (
                 'ctrl_interface=/run/wpa_supplicant\n'
-                'update_config=1\n\n'
+                'update_config=1\n'
+                'country=DK\n\n'
                 'network={\n'
                 f'    ssid="{ssid}"\n'
                 f'    psk="{password}"\n'

@@ -7,6 +7,17 @@ IMAGE_FEATURES += "ssh-server-openssh"
 
 WKS_FILE = "nvme-raspberrypi.wks"
 
+# Allow key-based root login without debug-tweaks (which would also allow password login)
+ROOTFS_POSTPROCESS_COMMAND:append = " permit_root_key_login;"
+permit_root_key_login() {
+    if grep -q 'PermitRootLogin' ${IMAGE_ROOTFS}/etc/ssh/sshd_config; then
+        sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' \
+            ${IMAGE_ROOTFS}/etc/ssh/sshd_config
+    else
+        echo 'PermitRootLogin prohibit-password' >> ${IMAGE_ROOTFS}/etc/ssh/sshd_config
+    fi
+}
+
 # Wic's direct.py only adds the 'p' partition separator for mmcblk devices, not nvme.
 # This means --ondisk nvme0n1 generates /dev/nvme0n11 instead of /dev/nvme0n1p1 in fstab,
 # and root=/dev/mmcblk0p2 in cmdline.txt. Both are patched here after image creation.
