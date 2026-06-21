@@ -5,12 +5,35 @@ inherit core-image
 
 IMAGE_FEATURES += "ssh-server-openssh"
 
-# RAUC A/B partition layout (p1 boot, p2 slot-A, p3 slot-B, p4 data)
-WKS_FILE = "rauc-raspberrypi.wks"
+# RAUC A/B via RPi firmware tryboot — GPT layout:
+# p1 bootsel(autoboot.txt) p2 boot-A p3 boot-B p4 rootfs-A p5 rootfs-B p6 data
+WKS_FILE = "rauc-raspberrypi-tryboot.wks"
 
 # ext4 output is required by the rauc-bundle recipe for the rootfs slot.
 # wic.bz2 + wic.bmap are used for initial NVMe flashing.
 IMAGE_FSTYPES:append = " ext4"
+
+# meta-rauc-community's base-files bbappend ships a demo SD-card fstab
+# (/dev/mmcblk0p1 /boot, mmcblk0p5 /data, mmcblk0p6 /home growfs) that does not
+# exist on our NVMe layout — those entries fail to mount and drop systemd into
+# emergency mode. Overwrite fstab with the correct layout.
+#
+# Note: there is intentionally NO /boot entry. Each RAUC slot has its own vfat
+# boot partition (p2 or p3); the running rootfs is slot-agnostic (RAUC installs
+# the same image to either slot), so it must not hardcode a boot device. RAUC
+# writes boot slots via their block device, and the tryboot backend mounts the
+# selector (p1) on demand. /data is mounted by the data.mount unit (nvme0n1p6).
+# Baked into the rootfs so the standalone .ext4 used for RAUC OTA is correct too.
+ROOTFS_POSTPROCESS_COMMAND:append = " fixup_fstab;"
+fixup_fstab() {
+    cat > ${IMAGE_ROOTFS}/etc/fstab <<'EOF'
+/dev/root            /                    auto       defaults              1  1
+proc                 /proc                proc       defaults              0  0
+devpts               /dev/pts             devpts     mode=0620,ptmxmode=0666,gid=5      0  0
+tmpfs                /run                 tmpfs      mode=0755,nodev,nosuid,strictatime 0  0
+tmpfs                /var/volatile        tmpfs      defaults              0  0
+EOF
+}
 
 # Allow key-based root login without debug-tweaks (which would also allow password login)
 ROOTFS_POSTPROCESS_COMMAND:append = " permit_root_key_login;"
@@ -23,37 +46,65 @@ permit_root_key_login() {
     fi
 }
 
-# Wic's direct.py only adds the 'p' partition separator for mmcblk devices, not nvme.
-# With --ondisk nvme0n1, wic writes /dev/nvme0n11 in fstab and root=/dev/mmcblk0p2 in
-# cmdline.txt. Patch both inside the compressed wic image after creation.
-#
-# Boot FAT at --align 4096 (sectors) = 4 MiB = byte offset 4194304.
-# Rootfs-A is partition index 1 (0-based) in the partition table.
-IMAGE_POSTPROCESS_COMMAND += "patch_nvme_image; "
-patch_nvme_image() {
+# Visible build/version marker so an OTA update is observable on the target slot.
+# Bump DEMO_VERSION (e.g. `bitbake -R 'DEMO_VERSION="3"' ...` or edit here) to
+# produce a distinguishable bundle; `cat /etc/build-version` shows which build a
+# slot is running.
+DEMO_VERSION ?= "2"
+ROOTFS_POSTPROCESS_COMMAND:append = " write_build_version;"
+write_build_version() {
+    echo "rpi5-base-image v${DEMO_VERSION}" > ${IMAGE_ROOTFS}/etc/build-version
+}
+
+# wic populates the boot partition (p2) via bootimg-partition, but it knows nothing
+# about the tryboot selector (p1) or the per-slot cmdline files. Inject those into
+# the compressed wic image after creation, computing FAT offsets from the GPT rather
+# than hardcoding them. (wic also can't lay down our autoboot.txt or the config.txt
+# [boot_partition=N] conditionals.)
+IMAGE_POSTPROCESS_COMMAND += "setup_tryboot_image; "
+setup_tryboot_image() {
     local wic_bz2="${IMGDEPLOYDIR}/${IMAGE_LINK_NAME}.wic.bz2"
-    local tmp_wic="${WORKDIR}/tmp-nvme-patch.wic"
+    local tmp_wic="${WORKDIR}/tmp-tryboot.wic"
 
     pbzip2 -d -c "${wic_bz2}" > "${tmp_wic}"
 
-    # Fix cmdline.txt in FAT boot partition (offset 4 MiB)
-    mcopy -i "${tmp_wic}@@4194304" ::cmdline.txt "${WORKDIR}/cmdline-nvme.txt"
-    sed -i 's|/dev/mmcblk0p2|/dev/nvme0n1p2|g' "${WORKDIR}/cmdline-nvme.txt"
-    sed -i 's|$| reboot=cold|' "${WORKDIR}/cmdline-nvme.txt"
-    mcopy -o -i "${tmp_wic}@@4194304" "${WORKDIR}/cmdline-nvme.txt" ::cmdline.txt
+    # Byte offsets of p1 (bootsel, index 0) and p2 (boot-a, index 1).
+    local sel_off boot_off
+    sel_off=$(sfdisk -J "${tmp_wic}" | python3 -c \
+        "import json,sys; p=json.load(sys.stdin)['partitiontable']['partitions']; print(p[0]['start']*512)")
+    boot_off=$(sfdisk -J "${tmp_wic}" | python3 -c \
+        "import json,sys; p=json.load(sys.stdin)['partitiontable']['partitions']; print(p[1]['start']*512)")
 
-    # Fix fstab in rootfs-A (partition index 1, 0-based); wic writes /dev/nvme0n11
-    # instead of /dev/nvme0n1p1 for the /boot entry.
-    local root_start
-    root_start=$(sfdisk -J "${tmp_wic}" | python3 -c \
-        "import json,sys; p=json.load(sys.stdin)['partitiontable']['partitions']; print(p[1]['start'])")
-    dd if="${tmp_wic}" of="${WORKDIR}/root.ext4" bs=512 skip="${root_start}" status=none
-    debugfs "${WORKDIR}/root.ext4" -R "cat /etc/fstab" > "${WORKDIR}/fstab-orig" 2>/dev/null
-    sed 's|/dev/nvme0n11|/dev/nvme0n1p1|g' "${WORKDIR}/fstab-orig" > "${WORKDIR}/fstab-fixed"
-    printf 'rm /etc/fstab\nwrite %s /etc/fstab\nchmod 644 /etc/fstab\nq\n' "${WORKDIR}/fstab-fixed" \
-        | debugfs -w "${WORKDIR}/root.ext4" 2>/dev/null
-    dd if="${WORKDIR}/root.ext4" of="${tmp_wic}" bs=512 seek="${root_start}" conv=notrunc status=none
-    rm -f "${WORKDIR}/root.ext4"
+    # p1: selector — slot A (boot_partition=2) is the committed default at flash time.
+    cat > "${WORKDIR}/autoboot.txt" <<'EOF'
+[all]
+boot_partition=2
+
+[tryboot]
+boot_partition=3
+EOF
+    mcopy -o -i "${tmp_wic}@@${sel_off}" "${WORKDIR}/autoboot.txt" ::autoboot.txt
+
+    # p2: per-slot cmdline files. Only root= differs; args mirror the proven
+    # firmware-direct boot. rauc.slot lets RAUC confirm the booted slot.
+    local args="rootfstype=ext4 fsck.repair=yes rootwait net.ifnames=0"
+    echo "console=tty1 root=/dev/nvme0n1p4 ${args} rauc.slot=A" > "${WORKDIR}/cmdline-rootfs-A.txt"
+    echo "console=tty1 root=/dev/nvme0n1p5 ${args} rauc.slot=B" > "${WORKDIR}/cmdline-rootfs-B.txt"
+    mcopy -o -i "${tmp_wic}@@${boot_off}" "${WORKDIR}/cmdline-rootfs-A.txt" ::cmdline-rootfs-A.txt
+    mcopy -o -i "${tmp_wic}@@${boot_off}" "${WORKDIR}/cmdline-rootfs-B.txt" ::cmdline-rootfs-B.txt
+
+    # p2: prepend the firmware per-partition cmdline selector to config.txt so the
+    # same boot image picks the matching rootfs in whichever slot it runs from.
+    mcopy -i "${tmp_wic}@@${boot_off}" ::config.txt "${WORKDIR}/config-orig.txt"
+    cat > "${WORKDIR}/config-tryboot.txt" <<'EOF'
+[boot_partition=2]
+cmdline=cmdline-rootfs-A.txt
+[boot_partition=3]
+cmdline=cmdline-rootfs-B.txt
+[all]
+EOF
+    cat "${WORKDIR}/config-orig.txt" >> "${WORKDIR}/config-tryboot.txt"
+    mcopy -o -i "${tmp_wic}@@${boot_off}" "${WORKDIR}/config-tryboot.txt" ::config.txt
 
     pbzip2 -f "${tmp_wic}"
     mv "${tmp_wic}.bz2" "${wic_bz2}"
@@ -78,7 +129,7 @@ IMAGE_INSTALL:append = " \
     curl \
     nano \
     rauc \
-    u-boot-fw-utils \
+    rauc-tryboot-backend \
     rauc-mark-good \
     data-mount \
     resize-data \

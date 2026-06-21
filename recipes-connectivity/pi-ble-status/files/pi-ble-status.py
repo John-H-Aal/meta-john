@@ -262,14 +262,14 @@ def main():
     gatt = dbus.Interface(bus.get_object(BLUEZ_SVC, adapter), GATT_MGR_IFACE)
     gatt.RegisterApplication(
         dbus.ObjectPath('/org/bluez/pistatus'), {},
-        reply_handler=lambda: print('GATT registered'),
+        reply_handler=lambda: print('GATT registered', flush=True),
         error_handler=lambda e: (print(f'GATT error: {e}', file=sys.stderr), sys.exit(1)))
 
     adv = Advertisement(bus)
     adv_mgr = dbus.Interface(bus.get_object(BLUEZ_SVC, adapter), LE_ADV_MGR)
     adv_mgr.RegisterAdvertisement(
         dbus.ObjectPath('/org/bluez/pistatusadv'), {},
-        reply_handler=lambda: print('Advertising as', socket.gethostname()),
+        reply_handler=lambda: print('Advertising as', socket.gethostname(), flush=True),
         error_handler=lambda e: print(f'Adv error: {e}', file=sys.stderr))
 
     GLib.MainLoop().run()

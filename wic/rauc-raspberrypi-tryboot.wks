@@ -1,0 +1,30 @@
+# RAUC A/B via Raspberry Pi 5 firmware tryboot — NVMe (nvme0n1), GPT
+#
+# No U-Boot: the RPi firmware boots the kernel directly and we switch slots with
+# the firmware's native tryboot mechanism. See system.conf (bootloader=custom)
+# and tryboot-backend.sh.
+#
+#   p1 bootsel   FAT   64M  — holds autoboot.txt only; STABLE selector partition,
+#                             never written by RAUC. autoboot.txt's [all]/[tryboot]
+#                             sections set boot_partition to 2 (slot A) or 3 (slot B).
+#   p2 boot-a    FAT  256M  — slot A boot files (kernel, dtbs, overlays, config.txt,
+#                             cmdline-rootfs-A.txt, cmdline-rootfs-B.txt)
+#   p3 boot-b    FAT  256M  — slot B boot files (empty at flash; RAUC writes on OTA)
+#   p4 rootfs-a  ext4   4G  — RAUC rootfs slot A (active after initial flash)
+#   p5 rootfs-b  ext4   4G  — RAUC rootfs slot B (empty at flash; OTA target)
+#   p6 data      ext4 512M  — placeholder; resize-data.service expands to fill drive
+#
+# config.txt (identical in p2 and p3) uses the firmware's per-partition conditional:
+#   [boot_partition=2] cmdline=cmdline-rootfs-A.txt   (root=/dev/nvme0n1p4)
+#   [boot_partition=3] cmdline=cmdline-rootfs-B.txt   (root=/dev/nvme0n1p5)
+# so the same boot image works in either slot — tryboot picks the partition,
+# the conditional picks the matching rootfs.
+
+bootloader --ptable gpt
+
+part --ondisk nvme0n1 --fstype=vfat --label bootsel --align 4096 --fixed-size 64M
+part --source bootimg-partition --ondisk nvme0n1 --fstype=vfat --label boot-a --align 4096 --fixed-size 256M
+part --ondisk nvme0n1 --fstype=vfat --label boot-b --align 4096 --fixed-size 256M
+part / --source rootfs --ondisk nvme0n1 --fstype=ext4 --label rootfs-a --align 4096 --fixed-size 4096M
+part --ondisk nvme0n1 --fstype=ext4 --label rootfs-b --align 4096 --fixed-size 4096M
+part --ondisk nvme0n1 --fstype=ext4 --label data --align 4096 --fixed-size 512M

@@ -4,7 +4,7 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda
 
 SRC_URI = "file://resize-data.sh file://resize-data.service"
 
-RDEPENDS:${PN} = "parted e2fsprogs-resize2fs udev"
+RDEPENDS:${PN} = "parted e2fsprogs-resize2fs udev util-linux-partx"
 
 inherit systemd
 
