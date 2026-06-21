@@ -1,0 +1,3 @@
+# RAUC signing keys — generated once via create-example-keys.sh; never commit.
+files/rauc-keys/*.pem
+files/rauc-keys/*.der
