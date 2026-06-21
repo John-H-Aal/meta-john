@@ -1,13 +1,12 @@
 [Unit]
 Description=Persistent data partition (/data)
 Documentation=man:systemd.mount(5)
-# Runs before local-fs.target so /data is available to services that want it
 Before=local-fs.target
-Requires=systemd-fsck@dev-mmcblk0p4.service
-After=systemd-fsck@dev-mmcblk0p4.service
+Requires=systemd-fsck@dev-nvme0n1p4.service
+After=systemd-fsck@dev-nvme0n1p4.service
 
 [Mount]
-What=/dev/mmcblk0p4
+What=/dev/nvme0n1p4
 Where=/data
 Type=ext4
 Options=defaults,noatime

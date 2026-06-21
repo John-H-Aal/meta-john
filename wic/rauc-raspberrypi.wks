@@ -1,18 +1,20 @@
-# RAUC A/B partition layout — Raspberry Pi 5, SD card (mmcblk0)
+# RAUC A/B partition layout — Raspberry Pi 5, NVMe (nvme0n1)
+#
+# Flash this image directly to /dev/nvme0n1 from the SD bootstrap image.
 #
 # p1  FAT32  256 MB   boot      — U-Boot + kernel + dtb
 # p2  ext4     4 GB   rootfs-a  — RAUC slot A (active after initial flash)
 # p3  ext4     4 GB   rootfs-b  — RAUC slot B (cloned from A; target of first OTA)
 # p4  ext4     7 GB   data      — persistent /data (wic has no "fill remainder"; 7 GB
-#                                  fits a 16 GB card with ~200 MB headroom; to use the
-#                                  full card after flash:
-#                                    parted /dev/mmcblk0 resizepart 4 100%
-#                                    resize2fs /dev/mmcblk0p4)
+#                                  fits a 16 GB NVMe with ~200 MB headroom; to use the
+#                                  full drive after flash:
+#                                    parted /dev/nvme0n1 resizepart 4 100%
+#                                    resize2fs /dev/nvme0n1p4)
 
-part /boot --source bootimg-partition --ondisk mmcblk0 --fstype=vfat --label boot --active --align 4096 --size 256
+part /boot --source bootimg-partition --ondisk nvme0n1 --fstype=vfat --label boot --active --align 4096 --size 256
 
-part / --source rootfs --ondisk mmcblk0 --fstype=ext4 --label rootfs-a --align 4096 --fixed-size 4096M
+part / --source rootfs --ondisk nvme0n1 --fstype=ext4 --label rootfs-a --align 4096 --fixed-size 4096M
 
-part --ondisk mmcblk0 --fstype=ext4 --label rootfs-b --align 4096 --fixed-size 4096M
+part --ondisk nvme0n1 --fstype=ext4 --label rootfs-b --align 4096 --fixed-size 4096M
 
-part /data --ondisk mmcblk0 --fstype=ext4 --label data --align 4096 --fixed-size 7168M
+part /data --ondisk nvme0n1 --fstype=ext4 --label data --align 4096 --fixed-size 7168M
