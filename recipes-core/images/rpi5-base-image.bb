@@ -45,4 +45,5 @@ IMAGE_INSTALL:append = " \
     u-boot-fw-utils \
     rauc-mark-good \
     data-mount \
+    resize-data \
 "

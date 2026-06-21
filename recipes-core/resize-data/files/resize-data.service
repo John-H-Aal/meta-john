@@ -1,0 +1,16 @@
+[Unit]
+Description=Expand /data partition to fill NVMe on first boot
+Documentation=man:resize2fs(8) man:parted(8)
+# Run before /data is mounted; rootfs (and /var) is already up at this point.
+DefaultDependencies=no
+ConditionPathExists=!/var/lib/resize-data-done
+Before=data.mount local-fs.target
+After=local-fs-pre.target systemd-remount-fs.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/resize-data.sh
+
+[Install]
+WantedBy=local-fs.target
