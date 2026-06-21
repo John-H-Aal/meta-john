@@ -1,3 +1,9 @@
-# RAUC signing keys — generated once via create-example-keys.sh; never commit.
+# RAUC signing keys — generated once via gen-keys.sh; never commit.
 files/rauc-keys/*.pem
 files/rauc-keys/*.der
+files/rauc-keys/*.csr.pem
+files/rauc-keys/index.txt*
+files/rauc-keys/serial*
+files/rauc-keys/.rand
+files/rauc-keys/certs/
+files/rauc-keys/openssl.cnf
