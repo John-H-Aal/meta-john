@@ -68,12 +68,17 @@ setup_tryboot_image() {
 
     pbzip2 -d -c "${wic_bz2}" > "${tmp_wic}"
 
-    # Byte offsets of p1 (bootsel, index 0) and p2 (boot-a, index 1).
-    local sel_off boot_off
+    # Byte offsets of p1 (bootsel, index 0), p2 (boot-a, index 1), p3 (boot-b,
+    # index 2), plus p2's size — used to clone boot-a onto boot-b below.
+    local sel_off boot_off bootb_off boot_bytes
     sel_off=$(sfdisk -J "${tmp_wic}" | python3 -c \
         "import json,sys; p=json.load(sys.stdin)['partitiontable']['partitions']; print(p[0]['start']*512)")
     boot_off=$(sfdisk -J "${tmp_wic}" | python3 -c \
         "import json,sys; p=json.load(sys.stdin)['partitiontable']['partitions']; print(p[1]['start']*512)")
+    bootb_off=$(sfdisk -J "${tmp_wic}" | python3 -c \
+        "import json,sys; p=json.load(sys.stdin)['partitiontable']['partitions']; print(p[2]['start']*512)")
+    boot_bytes=$(sfdisk -J "${tmp_wic}" | python3 -c \
+        "import json,sys; p=json.load(sys.stdin)['partitiontable']['partitions']; print(p[1]['size']*512)")
 
     # p1: selector — slot A (boot_partition=2) is the committed default at flash time.
     cat > "${WORKDIR}/autoboot.txt" <<'EOF'
@@ -105,6 +110,20 @@ cmdline=cmdline-rootfs-B.txt
 EOF
     cat "${WORKDIR}/config-orig.txt" >> "${WORKDIR}/config-tryboot.txt"
     mcopy -o -i "${tmp_wic}@@${boot_off}" "${WORKDIR}/config-tryboot.txt" ::config.txt
+
+    # Clone the now fully-populated boot-A (p2) onto boot-B (p3) so slot B is
+    # bootable straight after the initial flash. config.txt is identical in both
+    # slots (the [boot_partition=N] conditional selects the right cmdline), so a
+    # byte-for-byte copy of the partition is correct. Without this, a rootfs-only
+    # RAUC OTA leaves p3 empty and slot B fails to boot. Extract p2 to a temp file
+    # first to avoid dd reading and writing the same file in place.
+    # NB: byte offsets fed straight to dd via skip_bytes/seek_bytes/count_bytes —
+    # bitbake's pysh shell parser does not support $((...)) arithmetic.
+    dd if="${tmp_wic}" of="${WORKDIR}/boot-a.img" bs=1M iflag=skip_bytes,count_bytes \
+        skip="${boot_off}" count="${boot_bytes}" status=none
+    dd if="${WORKDIR}/boot-a.img" of="${tmp_wic}" bs=1M oflag=seek_bytes \
+        seek="${bootb_off}" conv=notrunc status=none
+    rm -f "${WORKDIR}/boot-a.img"
 
     pbzip2 -f "${tmp_wic}"
     mv "${tmp_wic}.bz2" "${wic_bz2}"
